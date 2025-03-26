@@ -26,3 +26,8 @@ int read_int_from_buffer(const char *buf) {
   memcpy(&network_value, buf, sizeof(int));
   return ntohl(network_value);
 }
+
+void write_int_to_buffer(char *buf, int value) {
+  int network_value = htonl(value);
+  memcpy(buf, &network_value, sizeof(int));
+}

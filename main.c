@@ -15,8 +15,11 @@
 #include "utils.h"
 
 #define QUEUE_SIZE 4096
+#define CQE_BATCH_SIZE 32
 #define BACKLOG 10
 #define PORT 8080
+
+static bool pending_accept = false;
 
 int setup_server(int port) {
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -52,23 +55,26 @@ int setup_server(int port) {
   return server_fd;
 }
 
-/* Returns -1 when SQ is full or there are no free entries in ops pool.
+/**
+ * Returns -1 when SQ is full or there are no free entries in ops pool.
  * In case of errors, Caller doesn't need to clean up anything as no memory will
  * be allocated.
  *
- * Returns 0 in case of success and caller must return the entry back to the ops
+ * Returns 0 when there are no free struct op are available to allocate. It
+ * means we are serving max number of clients for this io_uring.
+ *
+ * Returns 1 in case of success and caller must return the entry back to the ops
  * pool upon client disconnection.
  */
 int add_accept(struct io_uring *ring, int server_fd) {
+  struct op *aop = pool_pick_free();
+  if (aop == NULL) {
+    return 0;
+  }
+
   struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
   if (sqe == NULL) {
     fprintf(stderr, "SQ is full\n");
-    return -1;
-  }
-
-  struct op *aop = pool_pick_free();
-  if (aop == NULL) {
-    fprintf(stderr, "serving max number of clients\n");
     return -1;
   }
 
@@ -91,7 +97,7 @@ int add_accept(struct io_uring *ring, int server_fd) {
   /* Setting SOCK_NONBLOCK saves us extra calls to fcntl. */
   io_uring_prep_accept(sqe, server_fd, (struct sockaddr *)&aop->client_addr,
                        &aop->client_addr_len, SOCK_NONBLOCK);
-  return 0;
+  return 1;
 }
 
 /* fd is only necessary the first time add_read is called after accept returns a
@@ -233,117 +239,177 @@ int handle_request(struct io_uring *ring, struct op *rop) {
   return 0;
 }
 
-int start_server(struct io_uring *ring, int server_fd) {
-  struct op *op_data;
+int handle_accept(struct io_uring *ring, int server_fd, int client_fd,
+                  struct op *op) {
+  int ret = add_read(ring, op, client_fd);
+  if (ret < 0) {
+    return ret;
+  }
+
+  /* We should log after add_read, because it assigns client_fd to op_data. */
+  op_log_with_client_ip(op, "connected");
+
+  ret = add_accept(ring, server_fd);
+  if (ret < 0) {
+    return ret;
+  }
+  if (ret == 0) {
+    pending_accept = false;
+    fprintf(stderr, "serving max number of clients\n");
+  }
+
+  return ret;
+}
+
+int handle_read(struct io_uring *ring, int server_fd, struct op *op,
+                size_t bytes_read, uint64_t pool_id) {
+  if (bytes_read == 0) {
+    op_log_with_client_ip(op, "disconnected");
+    pool_put(op, pool_id);
+
+    int ret = add_accept(ring, server_fd);
+    if (ret < 0) {
+      return ret;
+    }
+    /**
+     * add_accept should successfully acquire a struct op now that a client has
+     * disconnected.
+     */
+    assert(ret == 1);
+    pending_accept = true;
+
+    return 0;
+  }
+
+  op->buf_len = bytes_read;
+  // parse_request(&req);
+  // handle_request(&req);
+  // which for now is equivalent to echoing the message back to client.
+  return add_write(ring, op, bytes_read);
+}
+
+int handle_write(struct io_uring *ring, struct op *op, size_t bytes_written) {
+  if (bytes_written == 0) {
+    op_log_with_client_ip(op, "SHORT_WRITE_0");
+  }
+
+  if (op_is_incomplete(op, bytes_written)) {
+    return add_short_write(ring, op, bytes_written);
+  }
+  return add_read(ring, op, op->client_fd);
+}
+
+int handle_cqe_batch(struct io_uring *ring, struct io_uring_cqe *cqes[],
+                     int count, int server_fd) {
+  int client_id, ret;
   size_t bytes_read, bytes_written;
 
-  if (add_accept(ring, server_fd) < 0)
-    return -1;
+  for (int i = 0; i < count; i++) {
+    struct io_uring_cqe *cqe = cqes[i];
 
-  if (io_uring_submit(ring) < 0)
-    fatal_error("io_uring_submit");
-
-  struct io_uring_cqe *cqe;
-  while (1) {
-    if (io_uring_wait_cqe(ring, &cqe) < 0)
-      fatal_error("io_uring_wait_cqe");
-
-    /* Upon adding an accept request to the ring, we ensured allocation of
-     * struct op so it is safe to index into client_ops and deref the ptr we get
-     * back.
+    /**
+     * Upon adding an accept request to the ring, we ensured allocation of
+     * struct op so it is safe to index into client_ops and deref the ptr we
+     * get back.
      */
     uint64_t pool_id = (uint64_t)io_uring_cqe_get_data(cqe);
-    op_data = pool_get(pool_id);
-    assert(op_data != NULL);
-
-    // if (op_data->id != pool_id) {
-    //   printf("op used by another pool_id=%lu old pool_id=%lu\n",
-    //   op_data->pool_id,
-    //          pool_id);
-    //   io_uring_cqe_seen(ring, cqe);
-    //   continue;
-    // }
-
-    // TODO: implement simple chat protocol.
+    io_uring_cqe_seen(ring, cqe);
+    struct op *op = pool_get(pool_id);
+    assert(op != NULL);
 
     if (cqe->res < 0) {
-      fprintf(stderr, "[fd=%d id=%lu] op %s failed: %s\n", op_data->client_fd,
-              op_data->pool_id, op_type_str(op_data->type),
-              strerror(-cqe->res));
-      io_uring_cqe_seen(ring, cqe);
-      pool_put(op_data, pool_id);
+      fprintf(stderr, "[fd=%d id=%lu] op %s failed: %s\n", op->client_fd,
+              op->pool_id, op_type_str(op->type), strerror(-cqe->res));
+      pool_put(op, pool_id);
+
+      int ret = add_accept(ring, server_fd);
+      if (ret < 0) {
+        return ret;
+      }
+      /**
+       * add_accept should successfully acquire a struct op now that a client
+       * has disconnected.
+       */
+      assert(ret == 1);
+      pending_accept = true;
+
       continue;
     }
 
-    switch (op_data->type) {
+    switch (op->type) {
     case OP_ACCEPT:
-      // printf("ACCEPT finished\n");
-      if (add_accept(ring, server_fd) < 0)
-        return -1;
-
-      int client_fd = cqe->res;
-      if (add_read(ring, op_data, client_fd) < 0)
-        return -1;
-
-      op_log_with_client_ip(op_data, "connected");
-
-      if (io_uring_submit(ring) < 0)
-        fatal_error("io_uring_submit");
-
+      client_id = cqe->res;
+      ret = handle_accept(ring, server_fd, client_id, op);
+      if (ret < 0) {
+        return ret;
+      }
       break;
     case OP_READ:
-      // printf("READ finished\n");
       /* cqe->res isn't negative so it's safe to assign to size_t. */
       bytes_read = cqe->res;
-      if (bytes_read == 0) {
-        op_log_with_client_ip(op_data, "disconnected");
-        pool_put(op_data, pool_id);
-        break;
-      }
-
-      op_data->buf_len = bytes_read;
-      // if (add_read(ring, op_data, op_data->client_fd) < 0)
-      //   return -1;
-      // handle_request(ring, op_data);
-      if (add_write(ring, op_data, bytes_read) < 0) {
-        return -1;
-      }
-
-      if (io_uring_submit(ring) < 0) {
-        fatal_error("io_uring_submit");
+      ret = handle_read(ring, server_fd, op, bytes_read, pool_id);
+      if (ret < 0) {
+        return ret;
       }
       break;
     case OP_WRITE:
-      // printf("WRITE finished\n");
       /* cqe->res isn't negative so it's safe to assign to size_t. */
       bytes_written = cqe->res;
-      if (bytes_written == 0) {
-        printf("[fd=%d id=%lu] SHORT_WRITE_0\n", op_data->client_fd,
-               op_data->pool_id);
+      ret = handle_write(ring, op, bytes_written);
+      if (ret < 0) {
+        return ret;
       }
+      break;
+    default:
+      printf("invalid operation type: %s\n", op_type_str(op->type));
+      return -1;
+    }
+  }
 
-      if (op_is_incomplete(op_data, bytes_written)) {
-        printf("SHORT WRITE fd=%d (%zu)/(%zu)\n", op_data->client_fd,
-               bytes_written, op_data->buf_len - op_data->processed);
+  return 0;
+}
 
-        if (add_short_write(ring, op_data, bytes_written) < 0) {
-          return -1;
-        }
-      } else if (add_read(ring, op_data, op_data->client_fd) < 0) {
-        return -1;
-      }
+int start_server(struct io_uring *ring, int server_fd) {
+  struct io_uring_cqe *cqes[CQE_BATCH_SIZE];
 
+  if (add_accept(ring, server_fd) < 0) {
+    fatal_error("add_accept");
+  }
+  if (io_uring_submit(ring) < 0) {
+    fatal_error("io_uring_submit");
+  }
+  pending_accept = true;
+
+  while (1) {
+    int ret = io_uring_wait_cqe(ring, &cqes[0]);
+    if (ret < 0) {
+      fatal_error("io_uring_wait_cqe");
+    }
+    ret = handle_cqe_batch(ring, cqes, 1, server_fd);
+    if (ret < 0) {
+      fatal_error("io_uring_wait_cqe");
+    }
+
+    int count = io_uring_peek_batch_cqe(ring, cqes, CQE_BATCH_SIZE);
+    if (count == -EAGAIN) {
+      /* Submit the result of handling cqe from io_uring_wait_cqe. */
       if (io_uring_submit(ring) < 0) {
         fatal_error("io_uring_submit");
       }
-
-      break;
-    default:
-      printf("invalid operation type: %s\n", op_type_str(op_data->type));
-      return -1;
+      continue;
+    }
+    if (count < 0) {
+      fatal_error("io_uring_peek_batch_cqe");
     }
 
-    io_uring_cqe_seen(ring, cqe);
+    ret = handle_cqe_batch(ring, cqes, count, server_fd);
+    if (ret < 0) {
+      fatal_error("io_uring_peek_batch_cqe");
+    }
+
+    if (io_uring_submit(ring) < 0) {
+      fatal_error("io_uring_submit");
+    }
   }
 }
 

@@ -1,3 +1,4 @@
+#include "utils.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -13,18 +14,7 @@
 #define QUEUE_SIZE 256
 #define NUM_MSG 1000
 #define CQE_BATCH_SIZE 10
-#define MAX_NUM_MSG 5000000
-
-void write_int_to_buffer(char *buf, int value) {
-  int network_value = htonl(value);
-  memcpy(buf, &network_value, sizeof(int));
-}
-
-int read_int_from_buffer(const char *buf) {
-  int network_value;
-  memcpy(&network_value, buf, sizeof(int));
-  return ntohl(network_value);
-}
+#define MAX_NUM_MSG 10000000
 
 void set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
@@ -177,6 +167,7 @@ void run_client(struct io_uring *ring, char *send_buf, char *recv_buf,
         printf("cqe for send\n");
       } else if (op_type == op_type_recv) {
         buf += sizeof(int);
+        printf("recv: %d\n", read_int_from_buffer(buf));
         num_ack++;
       }
     }
@@ -256,7 +247,7 @@ int main(int argc, char *argv[]) {
   }
   set_nonblocking(client_fd);
   connect_server(&ring, &server_addr, client_fd);
-  run_client(&ring, send_buf, recv_buf, client_fd, num_messages);
+  // run_client(&ring, send_buf, recv_buf, client_fd, num_messages);
 
   int count = 0;
   while (count < 5) {
