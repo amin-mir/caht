@@ -1,0 +1,5 @@
+*.o
+*.log
+test*
+chat
+client
