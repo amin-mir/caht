@@ -1,5 +1,7 @@
 *.o
 *.log
-test*
 chat
 client
+build/
+playground/
+test_runner
