@@ -1,12 +1,12 @@
 #include <assert.h>
 
 #include "op.h"
-#include "pool.h"
+#include "op_pool.h"
 #include "utils.h"
 #include <stddef.h>
 #include <stdio.h>
 
-#define MAX_CLIENTS 1
+#define MAX_CLIENTS 1024
 
 /* Max uint64_t we can reach with CLIENT_ID_BITS bits. */
 #define MAX_CLIENT_ID ((1UL << CLIENT_ID_BITS) - 1)

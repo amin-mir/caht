@@ -1,5 +1,5 @@
-#ifndef POOL_H
-#define POOL_H
+#ifndef OP_POOL_H
+#define OP_POOL_H
 
 #include <stdint.h>
 #include <stdbool.h>

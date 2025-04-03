@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 #include "op.h"
-#include "pool.h"
+#include "op_pool.h"
 #include "utils.h"
 
 #define QUEUE_SIZE 4096
