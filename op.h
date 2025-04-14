@@ -7,30 +7,32 @@
 #define BUF_SIZE 1024
 
 enum op_type {
-  OP_ACCEPT,
-  OP_READ,
-  OP_WRITE,
+	OP_ACCEPT,
+	OP_READ,
+	OP_WRITE,
 };
 
 struct op {
-  uint64_t pool_id;
+	uint64_t pool_id;
 
-  /* Buffer that's used to get bytes in and out. */
-  char *buf;
-  size_t buf_len;
+	/* Buffer that's used to get bytes in and out. */
+	char *buf;
+	size_t buf_len;
 
-  /* Used for handling short writes. */
-  size_t processed;
+	/* Used for handling short writes. */
+	size_t processed;
 
-  /* Used for storing client address. */
-  struct sockaddr_in client_addr;
-  socklen_t client_addr_len;
+	/* Used for storing client address. */
+	struct sockaddr_in client_addr;
+	socklen_t client_addr_len;
 
-  /* Client file descryptor. */
-  int client_fd;
+	/* Client file descryptor. */
+	int client_fd;
 
-  /* Type of current operation to perform for this client. */
-  enum op_type type;
+	/* Type of current operation to perform for this client. */
+	enum op_type type;
+	
+	char username[16];
 };
 
 char *op_type_str(enum op_type type);

@@ -1,5 +1,5 @@
 CC := gcc
-CFLAGS := -Wall -Wextra -ggdb
+CFLAGS := -Wall -Wextra -ggdb -MD -MP
 LDLIBS := -luring
 TEST_DIR := tests
 BUILD_DIR := build
@@ -10,7 +10,7 @@ SERVER_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SERVER_SRCS))
 CLIENT_SRCS := client.c utils.c
 CLIENT_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(CLIENT_SRCS))
 
-TEST_TARGET_SRCS := cid_set.c
+TEST_TARGET_SRCS := utils.c cid_set.c groups.c slab.c
 TEST_TARGET_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(TEST_TARGET_SRCS))
 
 TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
@@ -49,3 +49,5 @@ $(BUILD_DIR)/%.o: $(TEST_DIR)/%.c | $(BUILD_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR) $(SERVER_BIN) $(CLIENT_BIN) $(TEST_BIN)
+
+-include $(wildcard $(BUILD_DIR)/*.d)

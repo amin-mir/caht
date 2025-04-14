@@ -22,12 +22,12 @@
 static inline bool extract_in_use(uint64_t op_id) { return op_id & 1UL; }
 
 static inline uint64_t clear_in_use(uint64_t op_id) {
-  return op_id & CLEAR_LSB_MASK;
+	return op_id & CLEAR_LSB_MASK;
 }
 
 /* Extract 10 bits for pool_idx. */
 static inline uint16_t extract_pool_idx(uint64_t op_id) {
-  return (op_id >> SHFT_POOL_IDX) & POOL_IDX_MASK;
+	return (op_id >> SHFT_POOL_IDX) & POOL_IDX_MASK;
 }
 
 /* Extract 53 MSB bits for client_id. */
@@ -41,8 +41,8 @@ struct op *pool_get(uint64_t pool_id);
 struct op *pool_pick_free();
 
 /* Checks two conditions before returning op to the pool:
- *   1. op blongs to the client id which is extracted from pool_id.
- *   2. op is marked as unused.
+ *	 1. op blongs to the client id which is extracted from pool_id.
+ *	 2. op is marked as unused.
  */
 void pool_put(struct op *op, uint64_t pool_id);
 
