@@ -10,14 +10,26 @@ void fatal_error(const char *msg) {
 	exit(EXIT_FAILURE);
 }
 
-void *must_malloc(size_t size) {
+void *must_malloc(size_t size, const char *msg) {
 	void *ptr = malloc(size);
-	if (ptr == NULL) fatal_error("malloc");
+	if (ptr == NULL) fatal_error(msg);
 	return ptr;
 }
 
-void must_close(int fd) {
-	if (close(fd) < 0) fatal_error("close fd");
+void *must_calloc(size_t n, size_t size, const char *msg) {
+	void *ptr = calloc(n, size);
+	if (ptr == NULL) fatal_error(msg);
+	return ptr;
+}
+
+void *must_realloc(void *ptr, size_t size, const char *msg) {
+	ptr = realloc(ptr, size);
+	if (ptr == NULL) fatal_error(msg);
+	return ptr;
+}
+
+void must_close(int fd, const char *msg) {
+	if (close(fd) < 0) fatal_error(msg);
 }
 
 int read_int_from_buffer(const char *buf) {

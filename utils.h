@@ -16,8 +16,10 @@
 	}))
 
 void fatal_error(const char *msg);
-void *must_malloc(size_t size);
-void must_close(int fd);
+void *must_malloc(size_t size, const char *msg);
+void *must_calloc(size_t n, size_t size, const char *msg);
+void *must_realloc(void *ptr, size_t size, const char *msg);
+void must_close(int fd, const char *msg);
 int read_int_from_buffer(const char *buf);
 void write_int_to_buffer(char *buf, int value);
 size_t closest_prime(size_t n);

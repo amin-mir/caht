@@ -1,49 +1,55 @@
 #ifndef OP_POOL_H
 #define OP_POOL_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
-#define POOL_IDX_BITS 10
+#include "op.h"
 
-/* Remaining bits in a uint64_t - (index bits + used bit) */
-#define CLIENT_ID_BITS (sizeof(uint64_t) * 8 - POOL_IDX_BITS - 1)
+typedef struct op_pool {
+	/* buf_len that is used when creating operations. */
+	size_t ops_buf_len; 
 
-#define SHFT_POOL_IDX 1
-#define SHFT_CLIENT_ID (POOL_IDX_BITS + 1)
+	/**
+	 * Next index in ops which is going to be allocated. It can only be incremented
+	 * and once it reaches ops_cap we will need to grow the ops.
+	 */
+	size_t ops_next_idx;
 
-/* Used for marking the op as unused by performing `&`. */
-#define CLEAR_LSB_MASK (~1UL)
+	size_t ops_cap;
+	Operation **ops; /* Array of Operation ptrs. */
 
-/* Used when we need to keep only the pool index related bits. */
-#define POOL_IDX_MASK ((1UL << POOL_IDX_BITS) - 1)
+	/** 
+	 * Len is incremented and decremented as operations are fetched
+	 * and returned to the pool.
+	 */
+	size_t free_len; 
+	size_t free_cap;
 
-/* Extract in_use bit. */
-static inline bool extract_in_use(uint64_t op_id) { return op_id & 1UL; }
+	/* Indicates which slots are free in ops array. */
+	size_t *free_ops_idx; 
+} OpPool;
 
-static inline uint64_t clear_in_use(uint64_t op_id) {
-	return op_id & CLEAR_LSB_MASK;
-}
+void op_pool_init_with_cap(
+	OpPool *pool, 
+	size_t ops_buf_len, 
+	size_t op_cap, 
+	size_t free_cap
+);
+void op_pool_init(OpPool *pool, size_t ops_buf_len);
+void op_pool_deinit(OpPool *pool);
 
-/* Extract 10 bits for pool_idx. */
-static inline uint16_t extract_pool_idx(uint64_t op_id) {
-	return (op_id >> SHFT_POOL_IDX) & POOL_IDX_MASK;
-}
+/* Assumes that pool_id was acquired through op_pool_new_entry. */
+Operation *op_pool_get(OpPool *pool, uint64_t pool_id);
 
-/* Extract 53 MSB bits for client_id. */
-static inline uint64_t extract_client_id(uint64_t op_id) { return op_id >> SHFT_CLIENT_ID; }
-
-struct op *pool_get(uint64_t pool_id);
-
-/* Returns a free struct op * and marks it as in-use.
- * Returns NULL in case of error.
+/**
+ * Tries to grab an already allocated Operation that has been returned to the pool
+ * most recently first. If free list is empty, allocates a new Operation and appends
+ * it to list of operations.
  */
-struct op *pool_pick_free();
+Operation *op_pool_get_new(OpPool *pool, uint64_t client_id);
 
-/* Checks two conditions before returning op to the pool:
- *	 1. op blongs to the client id which is extracted from pool_id.
- *	 2. op is marked as unused.
- */
-void pool_put(struct op *op, uint64_t pool_id);
+void op_pool_put(OpPool *pool, Operation *op);
 
 #endif
