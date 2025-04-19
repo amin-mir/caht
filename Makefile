@@ -10,7 +10,7 @@ SERVER_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SERVER_SRCS))
 CLIENT_SRCS := client.c utils.c
 CLIENT_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(CLIENT_SRCS))
 
-TEST_TARGET_SRCS := utils.c cid_set.c groups.c slab.c
+TEST_TARGET_SRCS := utils.c cid_set.c groups.c slab.c client_map.c op_pool.c op.c
 TEST_TARGET_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(TEST_TARGET_SRCS))
 
 TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
