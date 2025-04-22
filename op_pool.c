@@ -12,35 +12,35 @@
 
 void op_pool_init_with_cap(
 	OpPool *pool, 
-	size_t ops_buf_len, 
 	size_t ops_cap, 
 	size_t free_cap
 ) {
-	pool->ops_buf_len = ops_buf_len;
 	pool->ops_cap = ops_cap;
 	pool->ops_next_idx = 0;
-	pool->ops = must_calloc(
-		ops_cap, 
-		sizeof(Operation *),
-		"op_pool_init_with_cap calloc ops"
+	pool->ops = must_malloc(
+		ops_cap * sizeof(Operation *),
+		"op_pool_init_with_cap malloc ops"
 	);
 
 	pool->free_cap = free_cap;
 	pool->free_len = 0;
-	pool->free_ops_idx = must_calloc(
-		free_cap, 
-		sizeof(size_t), 
-		"op_pool_init_with_cap calloc free_ops_idx"
+	pool->free_ops_idx = must_malloc(
+		free_cap * sizeof(size_t), 
+		"op_pool_init_with_cap malloc free_ops_idx"
 	);
 }
 
-void op_pool_init(OpPool *pool, size_t ops_buf_len) {
-	op_pool_init_with_cap(pool, ops_buf_len, OPERATIONS_INIT_CAP, FREE_OPS_INIT_CAP);
+void op_pool_init(OpPool *pool) {
+	op_pool_init_with_cap(pool, OPERATIONS_INIT_CAP, FREE_OPS_INIT_CAP);
 }
 
 void op_pool_deinit(OpPool *pool) {
+	/**
+	 * The pool itself is managed by the caller of this function, so we don't
+	 * free its memory here.
+	 */
 	for (size_t i = 0; i < pool->ops_next_idx; i++) {
-		op_destroy(pool->ops[i]);
+		free(pool->ops[i]);
 	}
 	free(pool->ops);
 	free(pool->free_ops_idx);
@@ -51,53 +51,71 @@ Operation *op_pool_get(OpPool *pool, size_t pool_id) {
 	return pool->ops[pool_id];
 }
 
-Operation *op_pool_get_new(OpPool *pool, uint64_t client_id) {
+Operation *op_pool_new_entry(OpPool *pool) {
 	if (pool->free_len != 0) {
 		/* Grab the most recent freed entry. */
 		size_t pool_id = pool->free_ops_idx[pool->free_len - 1];
 		pool->free_len--;
 
-		/* We need assign a new client_id but pool_id stays the same. */
-		Operation *fop = pool->ops[pool_id];
-		assert(fop->pool_id == pool_id);
-		fop->client_id = client_id;
+		/* pool_id must not have changed. */
+		Operation *op = pool->ops[pool_id];
 
-		return fop;
+		/**
+		 * OpPool contract:
+		 * pool_id value should not have changed. client_fd and buf are checked
+		 * when Operation is returned to the pool.
+		 */
+		assert(op->pool_id == pool_id);
+		return op;
 	}
 
 	if (pool->ops_next_idx == pool->ops_cap) {
-		size_t old_cap = pool->ops_cap;
-		size_t new_cap = pool->ops_cap * 2;
+		pool->ops_cap *= 2;
 		pool->ops = must_realloc(
 			pool->ops, 
-			new_cap * sizeof(Operation *),
-			"op_pool_get_new realloc ops"
+			pool->ops_cap * sizeof(Operation *),
+			"op_pool_new_entry realloc ops"
 		);
-
-		/* Ensuring that during realloc, new mem locations are 0 initialized. */
-		memset(pool->ops + old_cap, 0, (new_cap - old_cap) * sizeof(Operation *));
-		pool->ops_cap = new_cap;
 	}
 
-	assert(pool->ops[pool->ops_next_idx] == NULL);
-
-	Operation *fop = op_create_accept(
-		client_id, 
-		pool->ops_next_idx, 
-		pool->ops_buf_len
+	Operation *op = must_malloc(
+		sizeof(Operation), 
+		"op_pool_new_entry malloc op"
 	);
-	pool->ops[pool->ops_next_idx] = fop;
+
+	/**
+	 * OpPool contract:
+	 * assign correct value to pool_id and ensure client_fd and buf have correct
+	 * initial values.
+	 */
+	op->pool_id = pool->ops_next_idx;
+	op->client_fd = -1;
+	op->buf = NULL;
+
+	pool->ops[pool->ops_next_idx] = op;
 	pool->ops_next_idx++;
 
-	return fop;
+	return op;
 }
 
-void op_pool_put(OpPool *pool, Operation *op) {
-	if (op->client_fd > 0) {
-		printf("closing socket=%d\n", op->client_fd);
-		must_close(op->client_fd, "pool_put close client_fd");
-	}
-	op->client_fd = -1;
+void op_pool_return(OpPool *pool, Operation *op) {
+	/**
+	 * Because Operation doesn't manage the lifetime of op->buf, we don't
+	 * need to free that here. The buffers come from the slab, and the slab
+	 * is in charge of freeing them.
+	 *
+	 * Operation isn't in charge of closing the socket either. We could have
+	 * several operations which are for instance sending to the same client_fd.
+	 * client_fd must only be closed once and when it's removed from ClientMap.
+	 *
+	 * The only thing that is relevant to the pool is the pool_id which must not
+	 * be modified externally. Freeing the buffer and closing the socket should be
+	 * performed by users of pool, that's why we assert to ensure they have taken
+	 * care of these things here.
+	 */
+	assert(op->buf == NULL);
+	assert(op->client_fd == -1);
+
 	if (pool->free_len == pool->free_cap) {
 		pool->free_cap = pool->free_cap * 2;
 		pool->free_ops_idx = must_realloc(
@@ -105,12 +123,6 @@ void op_pool_put(OpPool *pool, Operation *op) {
 			pool->free_cap * sizeof(size_t),
 			"pool_put realloc free_ops_idx"
 		);
-
-		/**
-		 * unlike ops, We don't need to 0 initialize the new elements for free_ops_idx
-		 * because it doesn't hold ptrs that need to be set to NULL initially, and we
-		 * only access the elements before the free_len which must hold correct values.
-		 */
 	}
 	pool->free_ops_idx[pool->free_len] = op->pool_id;
 	pool->free_len++;

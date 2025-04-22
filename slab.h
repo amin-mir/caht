@@ -1,3 +1,6 @@
+#ifndef SLAB_H
+#define SLAB_H
+
 #include <stddef.h>
 
 struct slab {
@@ -12,3 +15,5 @@ void slab_init(struct slab *s, size_t buf_len);
 void slab_deinit(struct slab *s);
 char *slab_get(struct slab *s);
 void slab_put(struct slab *s, char *buf);
+
+#endif

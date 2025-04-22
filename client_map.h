@@ -1,9 +1,16 @@
+#ifndef CLIENT_MAP_H
+#define CLIENT_MAP_H
+
 #include <netinet/in.h>
 #include <stdbool.h>
 
 #define FREE_INIT_LEN 64
 
 typedef struct client_info {
+	/**
+	 * client_id is part of this struct because multiple keys could be mapped 
+	 * to the same bucket.
+	 */
 	uint64_t client_id;
 	struct sockaddr_in client_addr;
 	socklen_t client_addr_len;
@@ -30,7 +37,7 @@ void client_map_init(ClientMap *cm, size_t cap);
  * the matching ClientInfo, and returns true if the search was successful. Returns
  * false otherwise.
  */
-bool client_map_get_new(ClientMap *cm, uint64_t client_id, ClientInfo **info);
+bool client_map_new_entry(ClientMap *cm, uint64_t client_id, ClientInfo **info);
 
 /**
  * Returns a ClientInfo corresponding to the given client_id.
@@ -42,3 +49,5 @@ ClientInfo *client_map_get(ClientMap *cm, uint64_t client_id);
 bool client_map_delete(ClientMap *cm, uint64_t client_id);
 
 void client_map_deinit(ClientMap *cm);
+
+#endif

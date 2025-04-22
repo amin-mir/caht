@@ -4,46 +4,31 @@
 #include <stdbool.h>
 #include <arpa/inet.h>
 
-#define BUF_SIZE 1024
-
-enum op_type {
+typedef enum op_type {
 	OP_ACCEPT,
 	OP_READ,
 	OP_WRITE,
-};
+} OpType;
 
-struct op {
-	uint64_t pool_id;
+typedef struct op {
+	size_t pool_id; /* MUST NOT BE MODIFIED. */
 
-	/* Buffer that's used to get bytes in and out. */
-	char *buf;
-	size_t buf_len;
+	uint64_t client_id;
 
-	/* Used for handling short writes. */
-	size_t processed;
+	size_t buf_cap; /* Total capcity of buf. */
+	size_t buf_len; /* Number of bytes used for the operation. */
+	char *buf; /* Operation doesn't own the buf. */
 
-	/* Used for storing client address. */
-	struct sockaddr_in client_addr;
-	socklen_t client_addr_len;
+	size_t processed; /* Used for handling short writes. */
 
-	/* Client file descryptor. */
-	int client_fd;
+	int client_fd; /* Operation doesn't manage the socket. */
 
-	/* Type of current operation to perform for this client. */
-	enum op_type type;
-	
-	char username[16];
-};
+	OpType type;
 
-char *op_type_str(enum op_type type);
+} Operation;
 
-/* op returned from this function is marked as in_use. */
-struct op *op_create_accept(uint64_t id);
+char *op_type_str(OpType type);
 
-void op_destroy(struct op *op);
-
-void op_log_with_client_ip(struct op *op, char *msg);
-
-bool op_is_incomplete(struct op *op, size_t processed);
+bool op_is_incomplete(Operation *op, size_t processed);
 
 #endif

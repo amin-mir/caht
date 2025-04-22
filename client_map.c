@@ -42,7 +42,7 @@ void client_map_init(ClientMap *cm, size_t cap) {
 	}
 }
 
-bool client_map_get_new(ClientMap *cm, uint64_t client_id, ClientInfo **info) {
+bool client_map_new_entry(ClientMap *cm, uint64_t client_id, ClientInfo **info) {
 	size_t i = hash(cm->buckets_cap, client_id);
 	ClientInfo *node = cm->buckets[i];
 
