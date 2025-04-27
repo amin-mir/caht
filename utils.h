@@ -2,6 +2,7 @@
 #define UTILS_H
 
 #include <stdlib.h>
+#include <stdint.h>
 
 #define ROUND_UP_POW_2(x) \
 	(((x) < 1) ? 1 : ({ \
@@ -20,8 +21,12 @@ void *must_malloc(size_t size, const char *msg);
 void *must_calloc(size_t n, size_t size, const char *msg);
 void *must_realloc(void *ptr, size_t size, const char *msg);
 void must_close(int fd, const char *msg);
+void must_shutdown(int fd, const char *msg);
 int read_int_from_buffer(const char *buf);
 void write_int_to_buffer(char *buf, int value);
+uint64_t htonll(uint64_t val);
+uint64_t ntohll(uint64_t val);
 size_t closest_prime(size_t n);
+void set_nonblocking(int fd);
 
 #endif

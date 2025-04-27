@@ -35,10 +35,6 @@ void op_pool_init(OpPool *pool) {
 }
 
 void op_pool_deinit(OpPool *pool) {
-	/**
-	 * The pool itself is managed by the caller of this function, so we don't
-	 * free its memory here.
-	 */
 	for (size_t i = 0; i < pool->ops_next_idx; i++) {
 		free(pool->ops[i]);
 	}

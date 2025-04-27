@@ -4,9 +4,9 @@
 #include "../slab.h"
 
 Test(slab, operations) {
-	size_t buf_len = 1024;
-	struct slab s;
-	slab_init_cap(&s, buf_len, 2);
+	size_t buf_cap = 1024;
+	Slab s;
+	slab_init_cap(&s, buf_cap, 2);
 
 	// slab should have two free buffers so get both of them.
 	size_t i;
@@ -40,4 +40,6 @@ Test(slab, operations) {
 	}
 	cr_assert(eq(sz, s.len, 6));
 	cr_assert(eq(sz, s.cap, 8));
+
+	slab_deinit(&s);
 }

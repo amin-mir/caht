@@ -1,9 +1,10 @@
+#ifndef CLIENT_ID_SET_H
+#define CLIENT_ID_SET_H
+
 /**
  * Implementation of a HashSet with keys of type uint64_t
  * with open addressing and linear probing.
  */
-#ifndef CLIENT_ID_SET_H
-#define CLIENT_ID_SET_H
 
 #include <stddef.h>
 #include <stdint.h>

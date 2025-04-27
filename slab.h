@@ -3,17 +3,21 @@
 
 #include <stddef.h>
 
-struct slab {
+typedef struct {
+	size_t buf_cap;
 	size_t cap;
 	size_t len;
-	size_t buf_len;
 	char **buffers;
-};
+} Slab;
 
-void slab_init_cap(struct slab *s, size_t buf_len, size_t cap);
-void slab_init(struct slab *s, size_t buf_len);
-void slab_deinit(struct slab *s);
-char *slab_get(struct slab *s);
-void slab_put(struct slab *s, char *buf);
+void slab_init_cap(Slab *s, size_t buf_cap, size_t cap);
+void slab_init(Slab *s, size_t buf_cap);
+void slab_deinit(Slab *s);
+
+/* Guarantees to return a buffer or exits the program if malloc fails. */
+char *slab_get(Slab *s);
+
+size_t slab_buf_cap(Slab *s);
+void slab_put(Slab *s, char *buf);
 
 #endif

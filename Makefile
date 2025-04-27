@@ -4,11 +4,14 @@ LDLIBS := -luring
 TEST_DIR := tests
 BUILD_DIR := build
 
-SERVER_SRCS := main.c op.c op_pool.c utils.c
+SERVER_SRCS := main.c utils.c op.c op_pool.c client_map.c slab.c protocol.c
 SERVER_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SERVER_SRCS))
 
 CLIENT_SRCS := client.c utils.c
 CLIENT_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(CLIENT_SRCS))
+
+TEST_PROT_SRCS := test_protocol.c utils.c protocol.c op.c op_pool.c client_map.c slab.c
+TEST_PROT_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(TEST_PROT_SRCS))
 
 TEST_TARGET_SRCS := utils.c cid_set.c groups.c slab.c client_map.c op_pool.c op.c
 TEST_TARGET_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(TEST_TARGET_SRCS))
@@ -18,6 +21,7 @@ TEST_OBJS := $(TEST_SRCS:$(TEST_DIR)/%.c=$(BUILD_DIR)/%.o)
 
 SERVER_BIN := server
 CLIENT_BIN := client
+TEST_PROT_BIN := test_protocol
 TEST_BIN := test_runner
 
 .PHONY: build-server build-client run-tests clean
@@ -33,6 +37,11 @@ $(SERVER_BIN): $(SERVER_OBJS)
 build-client: $(CLIENT_BIN)
 
 $(CLIENT_BIN): $(CLIENT_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+build-test-protocol: $(TEST_PROT_BIN)
+
+$(TEST_PROT_BIN): $(TEST_PROT_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 run-tests: $(TEST_BIN)

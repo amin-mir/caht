@@ -4,20 +4,6 @@
 #include <string.h>
 
 #include "client_map.h"
-#include "utils.h"
-
-void client_info_log(ClientInfo *info, char *msg) {
-	char client_ip[INET_ADDRSTRLEN];
-	const char *dst = inet_ntop(
-		AF_INET, 
-		&info->client_addr.sin_addr, 
-		client_ip, 
-		INET_ADDRSTRLEN
-	);
-	if (dst == NULL) fatal_error("inet_ntop");
-	uint16_t port = ntohs(info->client_addr.sin_port);
-	printf("[%s:%d] client_id=%lu => %s\n", client_ip, port, info->client_id, msg);
-}
 
 static inline size_t hash(size_t cap, uint64_t client_id) {
 	return client_id & (cap - 1);
