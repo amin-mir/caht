@@ -4,13 +4,13 @@ LDLIBS := -luring
 TEST_DIR := tests
 BUILD_DIR := build
 
-SERVER_SRCS := main.c utils.c op.c op_pool.c client_map.c slab.c protocol.c
+SERVER_SRCS := main.c utils.c op.c op_pool.c client_map.c slab.c protocol.c server.c
 SERVER_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SERVER_SRCS))
 
 CLIENT_SRCS := client.c utils.c
 CLIENT_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(CLIENT_SRCS))
 
-TEST_PROT_SRCS := test_protocol.c utils.c protocol.c op.c op_pool.c client_map.c slab.c
+TEST_PROT_SRCS := test_protocol.c utils.c protocol.c
 TEST_PROT_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(TEST_PROT_SRCS))
 
 TEST_TARGET_SRCS := utils.c cid_set.c groups.c slab.c client_map.c op_pool.c op.c
