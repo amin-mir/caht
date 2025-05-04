@@ -157,11 +157,14 @@ void handle_recv(
 			}
 			break;
 		}
+
+		/* There's enough bytes to parse a request. */
 		int ret = rh_handle(rh, info, op, req_buf, req_len);
 		if (ret == -1) {
 			disconnect_and_free_op(rh, info, op);
 			return;
 		}
+
 		bytes_read -= req_len;
 		req_buf += req_len;
 	}

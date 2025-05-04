@@ -81,10 +81,9 @@ void rh_resume_recv(RequestHandler *rh, Operation *op, size_t bytes_read);
 
 void rh_add_send(
 	RequestHandler *rh,
-	void *resp,
+	Operation *op,
 	int client_fd,
-	uint64_t client_id,
-	size_t num_bytes
+	uint64_t client_id
 );
 
 void rh_resume_send(RequestHandler *rh, Operation *op, size_t processed);
@@ -97,11 +96,24 @@ int rh_handle(
 	size_t req_len
 );
 
-void ser_set_username_request(
-	SetUsernameRequest *req,
-	uint64_t seqid,
-	size_t ulen,
-	char username[ulen]
-);
+/**
+ * buf argument to ser_* functions must be aligned properly.
+ *
+ * For deser_* functions, however, buf argument doesn't need to be aligned. The fixed
+ * part of the function is copied to an aligned location on the stack before starting
+ * to parse the individual fields.
+ *
+ * Also deser_* functions assume there are enough bytes in the buf to parse the message.
+ */
+void deser_header(const char *buf, uint16_t *len, uint8_t *msgt);
+
+void deser_server_error(const char *buf, uint64_t *seqid, uint8_t *code);
+size_t ser_server_error(size_t buf_len, char *buf, uint64_t seqid, uint8_t code);
+
+void deser_set_username_request(const char *buf, uint64_t *seqid, const char **uname, 
+								size_t *uname_len);
+size_t ser_set_username_request(size_t buf_len, char *buf, uint64_t seqid, size_t ulen,
+								const char *uname);
 
 void deser_set_username_response(const char *buf, uint64_t *seqid);
+size_t ser_set_username_response(size_t buf_len, char *buf, uint64_t seqid);

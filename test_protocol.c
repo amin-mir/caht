@@ -99,14 +99,14 @@ void run_client(struct io_uring *ring, int client_fd) {
 	uint64_t req_seqid = 1;
 	char *username = "jojo";
 	size_t ulen = strlen(username);
-	ser_set_username_request(
-		(SetUsernameRequest *)op_send->buf, 
+	size_t req_len = ser_set_username_request(
+		BUFFER_SIZE, 
+		op_send->buf, 
 		req_seqid, 
-		ulen,
+		ulen, 
 		username
 	);
 
-	size_t req_len = sizeof(SetUsernameRequest) + ulen;
 	io_uring_prep_send(sqe, client_fd, op_send->buf, req_len, 0);
 	// sqe->flags |= IOSQE_CQE_SKIP_SUCCESS;
 	io_uring_sqe_set_data(sqe, op_send);
@@ -127,8 +127,8 @@ void run_client(struct io_uring *ring, int client_fd) {
 		sizeof(ClientOperation) + BUFFER_SIZE, 
 		"malloc send operation"
 	);
-	op_send->op_type = OP_TYPE_RECV;
-	op_send->buf_len = BUFFER_SIZE;
+	op_recv->op_type = OP_TYPE_RECV;
+	op_recv->buf_len = BUFFER_SIZE;
 
 	io_uring_prep_recv(sqe, client_fd, op_recv->buf, op_recv->buf_len, 0);
 	io_uring_sqe_set_data(sqe, op_recv);
@@ -166,6 +166,18 @@ void run_client(struct io_uring *ring, int client_fd) {
 				break;
 			}
 			case OP_TYPE_RECV: {
+				uint8_t msgt;
+				uint16_t len;
+				deser_header(op->buf, &len, &msgt);
+				printf("message type: %d len: %d\n", msgt, len);
+
+				// uint8_t code;
+				// uint64_t seqid;
+				// deser_server_error(op->buf, &seqid, &code);
+				// printf("seqid: %lu code: %d\n", seqid, code);
+
+				assert(msgt == MSGT_SET_USERNAME_RESPONSE);
+
 				uint64_t ack_seqid;
 				deser_set_username_response(op->buf, &ack_seqid);
 				assert(req_seqid == ack_seqid);

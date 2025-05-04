@@ -10,7 +10,7 @@
  *
  * Clients send an 8-byte seq ID in their requests which the server will then
  * use in the response. This can help the client, for instance, distinguish which
- * `send` message was handled. Also if server fails to handle any of the requests,
+ * request was handled. Also if server fails to handle any of the requests,
  * it will issue a SERVER_ERROR that matches seq ID of the request and a code for
  * the reason for failure. Clients may want to increase their seq ID each time they
  * make a request to the server.
@@ -125,12 +125,149 @@
 
 #include "protocol.h"
 
-bool username_valid(size_t len, char username[len]) {
+/******************** SER/DESER - START ********************/
+void deser_header(const char *buf, uint16_t *len, uint8_t *msgt) {
+	Header hdr;
+	memcpy(&hdr, buf, sizeof(hdr));
+
+	/**
+	 * Header is a packed struct so these accesses are most likely translated
+	 * to memory copy by the compiler, because accessing them directly is less
+	 * efficient e.g. on x86.
+	 */
+	*len = ntohs(hdr.len);
+	*msgt = hdr.msgt;
+}
+
+size_t ser_server_error(size_t buf_len, char *buf, uint64_t seqid, uint8_t code) {
+	ServerError *se = (ServerError *)buf;
+	size_t len = htons(sizeof(*se));
+	assert(len <= buf_len);
+
+	se->len = len;
+	se->msgt = MSGT_SERVER_ERROR;
+	se->seqid = htonll(seqid);
+	se->code = code;
+
+	return len;
+}
+
+void deser_server_error(const char *buf, uint64_t *seqid, uint8_t *code) {
+	ServerError se;
+	memcpy(&se, buf, sizeof(se));
+
+	*seqid = ntohll(se.seqid);
+	*code = se.code;
+}
+
+void deser_set_username_request(
+	const char *buf, 
+	uint64_t *seqid, 
+	const char **uname, 
+	size_t *uname_len
+) {
+	SetUsernameRequest req_hdr;
+	memcpy(&req_hdr, buf, sizeof(req_hdr));
+
+	uint16_t total_len = ntohs(req_hdr.len);
+	*seqid = ntohll(req_hdr.seqid);
+	*uname = buf + sizeof(req_hdr);
+	*uname_len = total_len - sizeof(req_hdr);
+}
+
+size_t ser_set_username_request(
+	size_t buf_len, 
+	char *buf, 
+	uint64_t seqid, 
+	size_t uname_len, 
+	const char *uname
+) {
+	SetUsernameRequest *req = (SetUsernameRequest *)buf;
+	uint16_t len = sizeof(*req) + uname_len;
+	assert(len <= buf_len);
+
+	req->len = htons(len);
+	req->msgt = MSGT_SET_USERNAME;
+	req->seqid = htonll(seqid);
+	memcpy(req->username, uname, uname_len);
+
+	return len;
+}
+
+/**
+ * More efficient implementation of the general form of deser function as it avoids
+ * copying the header bytes.
+ *
+ * ```
+ * void deser_set_username_response(const char *buf, uint64_t *seqid) {
+ *   SetUsernameResponse resp;
+ *   memcpy(&resp, buf, sizeof(resp));
+ *   seqid = ntohll(resp.seqid);
+ * }
+ * ```
+ */
+void deser_set_username_response(const char *buf, uint64_t *seqid) {
+    const SetUsernameResponse *resp = (const SetUsernameResponse *)buf;
+    uint64_t raw_seqid;
+
+	/**
+	 * dereferencing the fields directly is unsafe because buf may not be
+	 * properly aligned:
+	 *
+	 * uint64_t x = resp->seqid;
+	 *
+	 * But below we're only taking the address of a field and memcpy only
+	 * cares about copying bytes.
+	 */
+
+    memcpy(&raw_seqid, &resp->seqid, sizeof(raw_seqid));
+    *seqid = ntohll(raw_seqid);
+}
+
+size_t ser_set_username_response(size_t buf_len, char *buf, uint64_t seqid) {
+	SetUsernameResponse *resp = (SetUsernameResponse *)buf;
+	uint64_t len = sizeof(*resp);
+	assert(len <= buf_len);
+
+	resp->len = htons(len);
+	resp->msgt = MSGT_SET_USERNAME_RESPONSE;
+	resp->seqid = htonll(seqid);
+
+	return len;
+}
+/******************** SER/DESER - END ********************/
+
+bool username_valid(size_t len, const char username[len]) {
 	for (size_t i = 0; i < len; i++) {
 		char c = username[i];
 		if (!isalnum(c)) return false;
 	}
 	return true;
+}
+
+void acquire_send_buf(RequestHandler *rh, size_t len, Operation *op) {
+	Slab *s = rh->slab64;
+	if (len > 64) {
+		s = rh->slab2k;
+	}
+	op->buf = slab_get(s);
+	assert(op->buf != NULL);
+	op->buf_cap = slab_buf_cap(s);
+	op->buf_len = len;
+}
+
+/* Make sure to assign the len to buf_len as this function doesn't do that. */
+void acquire_small_send_buf(RequestHandler *rh, Operation *op) {
+	op->buf = slab_get(rh->slab64);
+	assert(op->buf != NULL);
+	op->buf_cap = slab_buf_cap(rh->slab64);
+}
+
+/* Make sure to assign the len to buf_len as this function doesn't do that. */
+void acquire_large_send_buf(RequestHandler *rh, Operation *op) {
+	op->buf = slab_get(rh->slab2k);
+	assert(op->buf != NULL);
+	op->buf_cap = slab_buf_cap(rh->slab2k);
 }
 
 RequestHandler rh_init(
@@ -289,23 +426,11 @@ void rh_resume_recv(RequestHandler *rh, Operation *op, size_t bytes_read) {
 	io_uring_prep_recv(sqe, op->client_fd, buf, len, 0);
 }
 
-void acquire_send_buf(RequestHandler *rh, size_t len, Operation *op) {
-	Slab *s = rh->slab64;
-	if (len > 64) {
-		s = rh->slab2k;
-	}
-	op->buf = slab_get(s);
-	assert(op->buf != NULL);
-	op->buf_cap = slab_buf_cap(s);
-	op->buf_len = len;
-}
-
 void rh_add_send(
 	RequestHandler *rh, 
-	void *resp, 
+	Operation *op,
 	int client_fd, 
-	uint64_t client_id,
-	size_t num_bytes
+	uint64_t client_id
 ) {
 	struct io_uring_sqe *sqe = io_uring_get_sqe(rh->ring);
 	if (sqe == NULL) {
@@ -313,12 +438,7 @@ void rh_add_send(
 		exit(EXIT_FAILURE);
 	}
 
-	Operation *op = op_pool_new_entry(rh->pool); 
-	assert(op != NULL);
-
 	/* op->pool_id should not be modified. */
-	acquire_send_buf(rh, num_bytes, op);
-	memcpy(op->buf, &resp, num_bytes);
 	op->client_id = client_id;
 	op->processed = 0;
 	op->client_fd = client_fd;
@@ -352,56 +472,19 @@ void rh_resume_send(RequestHandler *rh, Operation *op, size_t processed) {
 	io_uring_prep_send(sqe, op->client_fd, buf, len, 0);
 }
 
-/******************** SER/DESER - START ********************/
 void send_server_error(
 	RequestHandler *rh,
 	int client_fd,
-	uint64_t seqid,
 	uint64_t client_id,
+	uint64_t seqid,
 	uint8_t code
 ) {
-	ServerError resp;
-	resp.len = htons(sizeof(resp));
-	resp.msgt = MSGT_SERVER_ERROR;
-	resp.seqid = htonll(seqid);
-	resp.code = code;
+	Operation *op = op_pool_new_entry(rh->pool); 
+	assert(op != NULL);
+	acquire_small_send_buf(rh, op);
 
-	rh_add_send(rh, &resp, client_fd, client_id, sizeof(resp));
-}
-
-/**
- * We cannot safely declare a flexible array member struct (SetUsernameRequest)
- * on the stack like this because sizeof(req) only includes the fixed part:
- *
- * ```
- * SetUsernameRequest req;
- * ```
- *
- * Memory should be dynamically malloc'd before calling this function:
- *
- * ```
- * size_t len = sizeof(SetUsernameRequest) + ulen;
- * SetUsernameRequest *req = malloc(len);
- * ser_set_username_request(req, seqid, ulen, username);
- * ```
- *
- * Or allocated on the stack:
- * uint8_t buf[sizeof(SetUsernameRequest) + MAX_USERNAME_LEN];
- * SetUsernameRequest *req = (SetUsernameRequest *)buf;
- * ser_set_username_request(req, seqid, ulen, username);
- */
-void ser_set_username_request(
-	SetUsernameRequest *req,
-	uint64_t seqid,
-	size_t ulen,
-	char username[ulen]
-) {
-	uint16_t len = sizeof(*req) + ulen;
-
-	req->len = htons(len);
-	req->msgt = MSGT_SET_USERNAME;
-	req->seqid = htonll(seqid);
-	memcpy(req->username, username, ulen);
+	op->buf_len = ser_server_error(op->buf_cap, op->buf, seqid, code);
+	rh_add_send(rh, op, client_fd, client_id);
 }
 
 void send_set_username_response(
@@ -410,50 +493,13 @@ void send_set_username_response(
 	uint64_t seqid,
 	uint64_t client_id
 ) {
-	SetUsernameResponse resp;
-	resp.len = htons(sizeof(resp));
-	resp.msgt = MSGT_SET_USERNAME_RESPONSE;
-	resp.seqid = htonll(seqid);
+	Operation *op = op_pool_new_entry(rh->pool); 
+	assert(op != NULL);
+	acquire_small_send_buf(rh, op);
 
-	rh_add_send(rh, &resp, client_fd, client_id, sizeof(resp));
+	op->buf_len = ser_set_username_response(op->buf_cap, op->buf, seqid);
+	rh_add_send(rh, op, client_fd, client_id);
 }
-
-void deser_header(const char *buf, uint16_t *len, uint8_t *msgt) {
-	Header hdr;
-	memcpy(&hdr, buf, sizeof(hdr));
-	*len = hdr.len;
-	*msgt = hdr.msgt;
-}
-
-/**
- * ```
- * void deser_set_username_response(const char *buf, uint64_t *seqid) {
- *  	SetUsernameResponse resp;
- *  	memcpy(&resp, buf, sizeof(resp));
- *  	seqid = ntohll(resp.seqid);
- * }
- * ```
- *
- * More efficient than the commented function above because it avoids
- * copying the header bytes.
- */
-void deser_set_username_response(const char *buf, uint64_t *seqid) {
-    const SetUsernameResponse *resp = (const SetUsernameResponse *)buf;
-    uint64_t raw_seqid;
-
-	/**
-	 * dereferencing the fields directly is unsafe:
-	 *
-	 * uint64_t x = resp->seqid;
-	 *
-	 * But below we're only taking the address of a field and memcpy only
-	 * cares about copying bytes.
-	 */
-
-    memcpy(&raw_seqid, &resp->seqid, sizeof(raw_seqid));
-    *seqid = ntohll(raw_seqid);
-}
-/******************** SER/DESER - END ********************/
 
 /**
  * rh_handle will add sqes but will not submit. We assume ring will have
@@ -479,25 +525,26 @@ int rh_handle(
 	switch (msg_type) {
 		case MSGT_SET_USERNAME: {
 			/* Network byte order to host byte order. */
-			SetUsernameRequest *r = (SetUsernameRequest *)(req_buf);
-			uint64_t seqid = ntohll(r->seqid);
-			size_t username_len = req_len - sizeof(SetUsernameRequest);
+			uint64_t seqid;
+			const char *uname;
+			size_t uname_len;
+			deser_set_username_request(req_buf, &seqid, &uname, &uname_len);
 
 			/* Ensure username len is in range [3, 15]. */
-			if (username_len < 3 || username_len > 15) {
+			if (uname_len < 3 || uname_len > 15) {
 				uint8_t code = HREQ_INVALID_MSG_LEN;
-				send_server_error(rh, client_fd, seqid, client_id, code);
+				send_server_error(rh, client_fd, client_id, seqid, code);
 				return 0;
 			}
 
 			/* Ensure username chars are valid. */
-			if (!username_valid(username_len, req_buf)) {
+			if (!username_valid(uname_len, uname)) {
 				uint8_t code = HREQ_INVALID_USERNAME;
-				send_server_error(rh, client_fd, seqid, client_id, code);
+				send_server_error(rh, client_fd, client_id, seqid, code);
 				return 0;
 			}
 			
-			memcpy(info->username, r->username, username_len);
+			memcpy(info->username, uname, uname_len);
 			info->username[remaining] = '\0';
 
 			send_set_username_response(rh, client_fd, seqid, client_id);
