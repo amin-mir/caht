@@ -12,6 +12,7 @@ typedef struct client_info {
 	 * to the same bucket.
 	 */
 	uint64_t client_id;
+	int client_fd;
 	struct sockaddr_in client_addr;
 	socklen_t client_addr_len;
 	char username[16];

@@ -16,7 +16,7 @@ Test(op_pool, operations) {
 	/* Contract: client_fd is -1 and buf is NULL for the new entry. */
 	cr_assert(eq(sz, op->pool_id, 0));
 	cr_assert(eq(i32, op->client_fd, -1));
-	cr_assert(zero(ptr, op->buf));
+	cr_assert(zero(ptr, op->buf_ref));
 	/* ops_next_idx advances by 1 and free_ops remains unchanged. */
 	cr_assert(eq(sz, pool.ops_next_idx, 1));
 	cr_assert(eq(sz, pool.free_len, 0));
@@ -33,7 +33,7 @@ Test(op_pool, operations) {
 	 */
 	cr_assert(eq(sz, op->pool_id, 0));
 	cr_assert(eq(i32, op->client_fd, -1));
-	cr_assert(zero(ptr, op->buf));
+	cr_assert(zero(ptr, op->buf_ref));
 	/* ops_next_idx advances by 1 and free_ops remains unchanged. */
 	cr_assert(eq(sz, pool.ops_next_idx, 1));
 	cr_assert(eq(sz, pool.free_len, 0));

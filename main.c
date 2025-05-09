@@ -14,7 +14,6 @@
 #include "op_pool.h"
 #include "slab.h"
 #include "utils.h"
-#include "protocol.h"
 #include "server.h"
 
 #define QUEUE_SIZE 4096
@@ -69,10 +68,10 @@ int main() {
 	client_map_init(&clients, 1024);
 
 	Slab slab64;
-	slab_init(&slab64, 64);
+	slab_init(&slab64, BUFFER_SIZE_64B);
 
 	Slab slab2k;
-	slab_init(&slab2k, 2048);
+	slab_init(&slab2k, BUFFER_SIZE_2KB);
 
 	Server srv = server_init(&ring, &clients, &slab64, &slab2k, &pool, server_fd);
 

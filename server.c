@@ -19,7 +19,7 @@ bool username_valid(size_t len, const char username[len]) {
 	return true;
 }
 
-void log_with_client_info(int client_fd, ClientInfo *info, char *msg) {
+void log_with_client_info(ClientInfo *info, char *msg) {
 	char client_ip[INET_ADDRSTRLEN];
 	const char *dst = inet_ntop(
 		AF_INET, 
@@ -32,39 +32,52 @@ void log_with_client_info(int client_fd, ClientInfo *info, char *msg) {
 
 	printf("[%s:%d] client_id=%lu client_fd=%d => %s\n", 
 		client_ip, port,
-		info->client_id, client_fd, msg
+		info->client_id, info->client_fd, msg
 	);
 }
 
-
-void acquire_send_buf(Server *srv, size_t len, Operation *op) {
+void acquire_send_buf(Server *srv, size_t len, Operation *op, size_t ref) {
 	Slab *s = srv->slab64;
 	if (len > 64) {
 		s = srv->slab2k;
 	}
-	op->buf = slab_get(s);
-	assert(op->buf != NULL);
+	op->buf_ref = slab_acquire(s, ref);
+	assert(op->buf_ref != NULL);
 	op->buf_cap = slab_buf_cap(s);
 	op->buf_len = len;
 }
 
-/* Make sure to assign the len to buf_len as this function doesn't do that. */
-void acquire_small_send_buf(Server *srv, Operation *op) {
-	op->buf = slab_get(srv->slab64);
-	assert(op->buf != NULL);
+/**
+ * Assigns to op->buf_ref and op->buf_cap. 
+ * op->buf_len must be set by the caller.
+ */
+void acquire_small_buf(Server *srv, Operation *op, size_t ref) {
+	op->buf_ref = slab_acquire(srv->slab64, ref);
+	assert(op->buf_ref != NULL);
 	op->buf_cap = slab_buf_cap(srv->slab64);
 }
 
+/**
+ * Assigns to op->buf_ref and op->buf_cap. 
+ * op->buf_len must be set by the caller.
+ */
+void acquire_large_buf(Server *srv, Operation *op, size_t ref) {
+	op->buf_ref = slab_acquire(srv->slab2k, ref);
+	assert(op->buf_ref != NULL);
+	op->buf_cap = slab_buf_cap(srv->slab2k);
+}
+
 void free_op(Server *srv, Operation *op) {
+	printf("FREE OP %s client_id %lu\n", op_type_str(op->type), op->client_id);
 	Slab *s = srv->slab64;
 	if (op->buf_cap > 64) {
 		s = srv->slab2k;
 	}
-	slab_put(s, op->buf);
+	slab_release(s, op->buf_ref);
 
 	/* POOL CONTRACT */
 	op->client_fd = -1;
-	op->buf = NULL;
+	op->buf_ref = NULL;
 	op_pool_return(srv->pool, op);
 }
 
@@ -77,7 +90,7 @@ void disconnect_and_free_op(Server *srv, ClientInfo *info, Operation *op) {
 	 * and client information has already been removed and the corresponding client_fd closed.
 	 */
 	if (info != NULL) {
-		log_with_client_info(op->client_fd, info, "disconnected");
+		log_with_client_info(info, "disconnected");
 		must_close(op->client_fd, "handle_recv close client_fd");
 		client_map_delete(srv->clients, op->client_id);
 	}
@@ -89,13 +102,6 @@ void disconnect_and_free_op(Server *srv, ClientInfo *info, Operation *op) {
 	 * rh_add_accept(rh, next_client_id);
 	 * next_client_id++;
 	 */
-}
-
-/* Make sure to assign the len to buf_len as this function doesn't do that. */
-void acquire_large_send_buf(Server *srv, Operation *op) {
-	op->buf = slab_get(srv->slab2k);
-	assert(op->buf != NULL);
-	op->buf_cap = slab_buf_cap(srv->slab2k);
 }
 
 Server server_init(struct io_uring *ring, ClientMap *clients, Slab *slab64, Slab *slab2k,
@@ -127,10 +133,8 @@ void add_accept(Server *srv, uint64_t client_id) {
 	 * Directly getting a buffer from slab2k instead of calling acquire_op_buf because
 	 * the buffer will be used for recv operations and we want it to be as large as possible.
 	 */
-	op->buf = slab_get(srv->slab2k);
-	assert(op->buf != NULL);
+	acquire_large_buf(srv, op, 1);
 	op->buf_len = 0;
-	op->buf_cap = slab_buf_cap(srv->slab2k);
 	op->client_id = client_id;
 	op->processed = 0;
 	op->client_fd = -1;
@@ -140,8 +144,6 @@ void add_accept(Server *srv, uint64_t client_id) {
 	client_map_new_entry(srv->clients, client_id, &info);
 	memset(&info->client_addr, 0, sizeof(info->client_addr));
 	info->client_addr_len = sizeof(info->client_addr);
-
-	printf("ADD ACCEPT client_id=%lu\n", client_id);
 
 	io_uring_sqe_set_data(sqe, (void *)op->pool_id);
 	/* Setting SOCK_NONBLOCK saves us extra calls to fcntl. */
@@ -211,18 +213,19 @@ void add_recv(Server *srv, Operation *op, int client_fd) {
 	}
 
 	/**
-	 * pool_id:    must not be modified.
-	 * client_id:  set in add_accept.
-	 * buf_cap:    set in add_accept.
-	 * buf_len:    set in add_accept.
-	 * buf:        set in add_accept.
-	 * processed:  not needed.
+	 * pool_id:           must not be modified.
+	 * client_id:         set in add_accept.
+	 * buf_cap:           set in add_accept.
+	 * buf_len:           set in add_accept.
+	 * buf:               set in add_accept.
+	 * processed:         not needed.
 	 */
 	op->client_fd = client_fd;
 	op->type = OP_READ;
 
 	io_uring_sqe_set_data(sqe, (void *)op->pool_id);
-	io_uring_prep_recv(sqe, op->client_fd, op->buf, op->buf_cap, 0);
+	char *buf = op->buf_ref->buf;
+	io_uring_prep_recv(sqe, op->client_fd, buf, op->buf_cap, 0);
 }
 
 void resume_recv(Server *srv, Operation *op, size_t bytes_read) {
@@ -233,18 +236,18 @@ void resume_recv(Server *srv, Operation *op, size_t bytes_read) {
 	}
 
 	/**
-	 * pool_id:    must not be modified.
-	 * client_id:  set in add_accept.
-	 * buf_cap:    set in add_accept.
-	 * buf_len:    set in add_accept.
-	 * buf:        set in add_accept.
-	 * type:       set in add_read.
-	 * client_fd:  set in add_read.
-	 * processed:  not needed.
+	 * pool_id:           must not be modified.
+	 * client_id:         set in add_accept.
+	 * buf_cap:           set in add_accept.
+	 * buf_len:           set in add_accept.
+	 * buf:               set in add_accept.
+	 * type:              set in add_read.
+	 * client_fd:         set in add_read.
+	 * processed:         not needed.
 	 */
 
 	io_uring_sqe_set_data(sqe, (void *)op->pool_id);
-	char *buf = op->buf + bytes_read;
+	char *buf = op->buf_ref->buf + bytes_read;
 	size_t len = op->buf_cap - bytes_read;
 	io_uring_prep_recv(sqe, op->client_fd, buf, len, 0);
 }
@@ -263,7 +266,8 @@ void add_send(Server *srv, Operation *op, int client_fd, uint64_t client_id) {
 	op->type = OP_WRITE;
 
 	io_uring_sqe_set_data(sqe, (void *)op->pool_id);
-	io_uring_prep_send(sqe, op->client_fd, op->buf, op->buf_len, 0);
+	char *buf = op->buf_ref->buf;
+	io_uring_prep_send(sqe, op->client_fd, buf, op->buf_len, 0);
 }
 
 void resume_send(Server *srv, Operation *op, size_t processed) {
@@ -274,41 +278,50 @@ void resume_send(Server *srv, Operation *op, size_t processed) {
 	}
 
 	/**
-	 * pool_id:   should not be modified.
-	 * client_id: set in add_send.
-	 * buf_cap:   set in add_send.
-	 * buf_len:   set in add_send.
-	 * buf:       set in add_send.
-	 * client_fd: set in add_send.
-	 * type:      set in add_send.
+	 * pool_id:           should not be modified.
+	 * client_id:         set in add_send.
+	 * buf_cap:           set in add_send.
+	 * buf_len:           set in add_send.
+	 * buf:               set in add_send.
+	 * client_fd:         set in add_send.
+	 * type:              set in add_send.
 	 */
 	op->processed += processed;
 
 	io_uring_sqe_set_data(sqe, (void *)op->pool_id);
-	char *buf = op->buf + op->processed;
+	char *buf = op->buf_ref->buf + op->processed;
 	size_t len = op->buf_len - op->processed;
 	io_uring_prep_send(sqe, op->client_fd, buf, len, 0);
 }
 
-void send_server_error(Server *srv, int client_fd, uint64_t client_id,
-					   uint64_t seqid, uint8_t code)
-{
+void send_server_error(
+	Server *srv, 
+	int client_fd, 
+	uint64_t client_id,
+	uint64_t seqid, 
+	uint8_t code
+) {
 	Operation *op = op_pool_new_entry(srv->pool); 
 	assert(op != NULL);
-	acquire_small_send_buf(srv, op);
+	acquire_small_buf(srv, op, 1);
 
-	op->buf_len = ser_server_error(op->buf_cap, op->buf, seqid, code);
+	char *buf = op->buf_ref->buf;
+	op->buf_len = ser_server_error(op->buf_cap, buf, seqid, code);
 	add_send(srv, op, client_fd, client_id);
 }
 
-void send_set_username_response(Server *srv, int client_fd, uint64_t seqid,
-								uint64_t client_id)
-{
+void send_set_username_response(
+	Server *srv, 
+	int client_fd, 
+	uint64_t seqid,
+	uint64_t client_id
+) {
 	Operation *op = op_pool_new_entry(srv->pool); 
 	assert(op != NULL);
-	acquire_small_send_buf(srv, op);
+	acquire_small_buf(srv, op, 1);
 
-	op->buf_len = ser_set_username_response(op->buf_cap, op->buf, seqid);
+	char *buf = op->buf_ref->buf;
+	op->buf_len = ser_set_username_response(op->buf_cap, buf, seqid);
 	add_send(srv, op, client_fd, client_id);
 }
 
@@ -321,24 +334,27 @@ void send_set_username_response(Server *srv, int client_fd, uint64_t seqid,
  * caller of this function. We assume req_len >= 3 and req should contain all bytes 
  * necessary for parsing a request.
  */
-int handle(Server *srv, ClientInfo *info, Operation *req_op, char *req_buf,
-		   size_t req_len)
-{
+int handle(
+	Server *srv,
+	ClientInfo *info,
+	Operation *req_op,
+	char *req_buf,
+	size_t req_len,
+	uint8_t msgt,
+	uint64_t seqid
+) {
 	int client_fd = req_op->client_fd;
 	uint64_t client_id = req_op->client_id;
 
-	char msg_type = req_buf[PROT_MSGT_OFFT];
-	size_t remaining = req_len - PROT_HDR_LEN;
-	switch (msg_type) {
+	switch (msgt) {
 		case MSGT_SET_USERNAME: {
 			/* Network byte order to host byte order. */
-			uint64_t seqid;
 			const char *uname;
 			size_t uname_len;
-			deser_set_username_request(req_buf, &seqid, &uname, &uname_len);
+			deser_set_username(req_len, req_buf, &uname, &uname_len);
 
 			/* Ensure username len is in range [3, 15]. */
-			if (uname_len < 3 || uname_len > 15) {
+			if (uname_len < MIN_UNAME_LEN || uname_len > MAX_UNAME_LEN) {
 				uint8_t code = CODE_INVALID_MSG_LEN;
 				send_server_error(srv, client_fd, client_id, seqid, code);
 				return 0;
@@ -352,10 +368,14 @@ int handle(Server *srv, ClientInfo *info, Operation *req_op, char *req_buf,
 			}
 			
 			memcpy(info->username, uname, uname_len);
-			info->username[remaining] = '\0';
+			info->username[uname_len] = '\0';
+			printf("client username is %s\n", info->username);
 
 			send_set_username_response(srv, client_fd, seqid, client_id);
 			return 0;
+		}
+		case MSGT_CREATE_GROUP: {
+
 		}
 		default: {
 			return -1;
@@ -363,11 +383,11 @@ int handle(Server *srv, ClientInfo *info, Operation *req_op, char *req_buf,
 	};
 }
 
-void handle_accept(Server *srv, int client_fd, Operation *op) {
+void handle_accept(Server *srv, int client_fd, ClientInfo *info, Operation *op) {
+	info->client_fd = client_fd;
+
 	/* Log connection info. */
-	ClientInfo *info = client_map_get(srv->clients, op->client_id);
-	assert(info != NULL);
-	log_with_client_info(client_fd, info, "connected");
+	log_with_client_info(info, "connected");
 
 	/* Recv from connected socket. */
 	add_recv(srv, op, client_fd);
@@ -383,23 +403,29 @@ void handle_recv(Server *srv, ClientInfo *info, Operation *op, size_t bytes_read
 		return;
 	}
 
-	char *req_buf = op->buf;
-	uint16_t net_len;
-	while (bytes_read > PROT_HDR_LEN) {
-		memcpy(&net_len, req_buf, sizeof(net_len));
-		uint16_t req_len = ntohs(net_len);
+	char *req_buf = op->buf_ref->buf;
+	while (bytes_read >= PROT_HDR_LEN) {
+		uint16_t req_len;
+		uint8_t req_msgt;
+		uint64_t req_seqid;
+		deser_header(req_buf, &req_len, &req_msgt, &req_seqid);
+
+		if (req_len > BUFFER_SIZE_2KB) {
+			disconnect_and_free_op(srv, info, op);
+			return;
+		}
 
 		/* Received request is incomplete. */
 		if (bytes_read < req_len) {
 			/* No need for memmove if we haven't handled anything. */
-			if (op->buf != req_buf) {
-				memmove(op->buf, req_buf, op->buf_cap - bytes_read);
+			if (op->buf_ref->buf != req_buf) {
+				memmove(op->buf_ref->buf, req_buf, op->buf_cap - bytes_read);
 			}
 			break;
 		}
 
 		/* There's enough bytes to parse a request. */
-		int ret = handle(srv, info, op, req_buf, req_len);
+		int ret = handle(srv, info, op, req_buf, req_len, req_msgt, req_seqid);
 		if (ret == -1) {
 			disconnect_and_free_op(srv, info, op);
 			return;
@@ -412,9 +438,14 @@ void handle_recv(Server *srv, ClientInfo *info, Operation *op, size_t bytes_read
 	resume_recv(srv, op, bytes_read);
 }
 
+/**
+ * We return the op to the pool, when a send operation is successfully handled.
+ * free_op will decrement the buffer ref_count by 1 and free the buffer only when
+ * its value hits 0.
+ */
 void handle_send(Server *srv, ClientInfo *info, Operation *op, size_t bytes_written) {
 	if (bytes_written == 0) {
-		log_with_client_info(op->client_fd, info, "SHORT_WRITE_0");
+		log_with_client_info(info, "SHORT_WRITE_0");
 	}
 
 	if (op_is_incomplete(op, bytes_written)) {
@@ -468,7 +499,7 @@ void handle_cqe_batch(Server *srv, struct io_uring_cqe *cqes[], int count) {
 		switch (op->type) {
 			case OP_ACCEPT: {
 				int client_fd = cqe_res;
-				handle_accept(srv, client_fd, op);
+				handle_accept(srv, client_fd, info, op);
 				break;
 			}
 			case OP_READ: {

@@ -55,6 +55,7 @@
  *** GET_USERNAMES
  * 
  * <len:2> <msgt:1> <gid:8>
+ * len = 11
  *
  *
  *** GET_USERNAME_RESPONSE
@@ -64,7 +65,8 @@
  * 7 <= len <= 2048
  *
  * `count` is the number of usernames that follows. For each username, first read
- * its length and then read `usrlen` bytes. Client should add the terminating NULL char.
+ * its length and then read `usrlen` bytes. Client should add the terminating NULL char
+ * when storing it in memory.
  *
  * In case gid is invalid, count would be 0.
  *
@@ -73,25 +75,38 @@
  *
  *
  *** CREATE_GROUP
- * <len:2> <msgt:1>
- * len = 3
- * msgt = 2
- * server creates a group and returns an id.
+ * <len:2> <msgt:1> <uids_len:1> [<uid:8>]*count
+ * 12 <= len <= 2044
+ * 1 <= count <= 255
+ *
+ * Server creates a group with the provided user IDs and the user who issues this request.
+ * Server will return the group ID as response in CREATE_GROUP_RESPONSE to the issuer.
+ * Server will also send the group ID to all other users in JOINED_GROUP.
+ * Limit of the number of user IDs which can be included in this message is 200 because
+ * send buffers are 2KiB which can fit around that many uids.
  *
  *
  *** CREATE_GROUP_RESPONSE
  * <len:2> <msgt:1> <gid:8>
  * len = 11
- * msgt = 3
  *
  *
- *** JOIN_GROUP
- * <len:2> <msgt:1> <gid:8>
+ *** JOINED_GROUP
+ * <len:2> <msgt:1> <uid:8> <gid:8> <count:1> [<uid:8>]*count
+ * 28 <= len <= 2048
+ *
+ * Server will send this message to all clients who were added to a group by another client
+ * that just created a group.
+ * The uids can just be directly copied from the originating CREATE_GROUP message.
+ *
+ *
+ *** ADD_TO_GROUP
+ * <len:2> <msgt:1> <gid:8> <count:1> [<uid:8>]*count
  * len = 11
  * msgt = 4
  *
  *
- *** JOIN_GROUP_RESPONSE
+ *** ADD_TO_GROUP_RESPONSE
  * <len:2> <msgt:1> <res:1>
  * len = 4
  * msgt = 5
@@ -121,6 +136,7 @@
 #include <netinet/in.h>
 #include <string.h>
 #include <assert.h>
+#include <stddef.h>
 
 #include "protocol.h"
 #include "utils.h"
@@ -131,127 +147,100 @@
 typedef struct {
 	uint16_t len;
 	uint8_t msgt;
+	uint64_t seqid;
 } Header;
 
 typedef struct {
-    uint16_t len;
-    uint8_t msgt;
-    uint64_t seqid;
+	Header hdr;
     uint8_t code;
 } ServerError;
 
 typedef struct {
-	uint16_t len;
-	uint8_t msgt;
-	uint64_t seqid;
+	Header hdr;
 	uint8_t username[];
 } SetUsernameRequest;
 
 typedef struct {
-	uint16_t len;
-	uint8_t msgt;
-	uint64_t seqid;
+	Header hdr;
 } SetUsernameResponse;
+
+typedef struct {
+	Header hdr;
+	uint8_t uids_len;
+	uint64_t uids[];
+} CreateGroup;
 
 #pragma pack(pop)
 /**************** WIRE PROTOCOL MESSAGES - END ****************/
 
-void deser_header(const char *buf, uint16_t *len, uint8_t *msgt) {
-	Header hdr;
-	memcpy(&hdr, buf, sizeof(hdr));
+int deser_header(const char *buf, uint16_t *len, uint8_t *msgt, uint64_t *seqid) {
+	uint16_t net_len;
+	memcpy(&net_len, buf, sizeof(net_len));
+	*len = ntohs(net_len);
 
-	/**
-	 * Header is a packed struct so these accesses are most likely translated
-	 * to memory copy by the compiler, because accessing them directly is less
-	 * efficient e.g. on x86.
-	 */
-	*len = ntohs(hdr.len);
-	*msgt = hdr.msgt;
+	*msgt = *(const uint8_t *)(buf + offsetof(Header, msgt));
+
+	uint64_t net_seqid;
+	memcpy(&net_seqid, buf + offsetof(Header, seqid), sizeof(net_seqid));
+	*seqid = ntohll(net_seqid);
+
+	return 0;
+}
+
+int deser_server_error(size_t buf_len, const char *buf, uint8_t *code) {
+	if (buf_len != sizeof(ServerError)) return -1;
+	*code = *(const uint8_t *)(buf + offsetof(ServerError, code));
+	return 0;
 }
 
 size_t ser_server_error(size_t buf_len, char *buf, uint64_t seqid, uint8_t code) {
 	ServerError *se = (ServerError *)buf;
-	size_t len = htons(sizeof(*se));
+	uint16_t len = sizeof(*se);
 	assert(len <= buf_len);
 
-	se->len = len;
-	se->msgt = MSGT_SERVER_ERROR;
-	se->seqid = htonll(seqid);
+	se->hdr.len = htons(len);
+	se->hdr.msgt = MSGT_SERVER_ERROR;
+	se->hdr.seqid = htonll(seqid);
 	se->code = code;
 
 	return len;
 }
 
-void deser_server_error(const char *buf, uint64_t *seqid, uint8_t *code) {
-	ServerError se;
-	memcpy(&se, buf, sizeof(se));
-
-	*seqid = ntohll(se.seqid);
-	*code = se.code;
-}
-
-void deser_set_username_request(
-	const char *buf, 
-	uint64_t *seqid, 
-	const char **uname, 
+int deser_set_username(
+	size_t buf_len,
+	const char *buf,
+	const char **uname,
 	size_t *uname_len
 ) {
-	SetUsernameRequest req_hdr;
-	memcpy(&req_hdr, buf, sizeof(req_hdr));
-
-	uint16_t total_len = ntohs(req_hdr.len);
-	*seqid = ntohll(req_hdr.seqid);
-	*uname = buf + sizeof(req_hdr);
-	*uname_len = total_len - sizeof(req_hdr);
+	/**
+	 * We don't need to check buf_len for this message type using the following if because
+	 * uname_len will be set to 0 if client doesn't send any bytes for username. The caller
+	 * will check the uname_len to be within acceptable bounds.
+	 *
+	 * if (buf_len != sizeof(SetUsernameRequest)) return -1;
+	 */
+	*uname = buf + offsetof(SetUsernameRequest, username);
+	*uname_len = buf_len - sizeof(SetUsernameRequest);
+	return 0;
 }
 
-size_t ser_set_username_request(
-	size_t buf_len, 
-	char *buf, 
-	uint64_t seqid, 
-	size_t uname_len, 
+size_t ser_set_username(
+	size_t buf_len,
+	char *buf,
+	uint64_t seqid,
+	size_t uname_len,
 	const char *uname
 ) {
 	SetUsernameRequest *req = (SetUsernameRequest *)buf;
 	uint16_t len = sizeof(*req) + uname_len;
 	assert(len <= buf_len);
 
-	req->len = htons(len);
-	req->msgt = MSGT_SET_USERNAME;
-	req->seqid = htonll(seqid);
+	req->hdr.len = htons(len);
+	req->hdr.msgt = MSGT_SET_USERNAME;
+	req->hdr.seqid = htonll(seqid);
 	memcpy(req->username, uname, uname_len);
 
 	return len;
-}
-
-/**
- * More efficient implementation of the general form of deser function as it avoids
- * copying the header bytes.
- *
- * ```
- * void deser_set_username_response(const char *buf, uint64_t *seqid) {
- *   SetUsernameResponse resp;
- *   memcpy(&resp, buf, sizeof(resp));
- *   seqid = ntohll(resp.seqid);
- * }
- * ```
- */
-void deser_set_username_response(const char *buf, uint64_t *seqid) {
-    const SetUsernameResponse *resp = (const SetUsernameResponse *)buf;
-    uint64_t raw_seqid;
-
-	/**
-	 * dereferencing the fields directly is unsafe because buf may not be
-	 * properly aligned:
-	 *
-	 * uint64_t x = resp->seqid;
-	 *
-	 * But below we're only taking the address of a field and memcpy only
-	 * cares about copying bytes.
-	 */
-
-    memcpy(&raw_seqid, &resp->seqid, sizeof(raw_seqid));
-    *seqid = ntohll(raw_seqid);
 }
 
 size_t ser_set_username_response(size_t buf_len, char *buf, uint64_t seqid) {
@@ -259,9 +248,75 @@ size_t ser_set_username_response(size_t buf_len, char *buf, uint64_t seqid) {
 	uint64_t len = sizeof(*resp);
 	assert(len <= buf_len);
 
-	resp->len = htons(len);
-	resp->msgt = MSGT_SET_USERNAME_RESPONSE;
-	resp->seqid = htonll(seqid);
+	resp->hdr.len = htons(len);
+	resp->hdr.msgt = MSGT_SET_USERNAME_RESPONSE;
+	resp->hdr.seqid = htonll(seqid);
+
+	return len;
+}
+
+int deser_create_group(
+	size_t buf_len,
+	const char *buf,
+	uint8_t *uids_len,
+	uint64_t *uids,
+	const char **uids_raw,
+	size_t *uids_raw_len
+) {
+	/**
+	 * In case client doesn't send any uids, the uids_len will be set to 0 and the
+	 * caller can validate that. Thus we only check there's enough bytes for the fixed
+	 * part here.
+	 */
+	if (buf_len < sizeof(CreateGroup)) return -1;
+
+	*uids_len = *(uint8_t *)(buf + offsetof(CreateGroup, uids_len));
+
+	/* Ensure uids has enough space. MAX_UIDS_PER_MSG is max capacity of uids array. */
+	if (*uids_len > MAX_UIDS_PER_MSG) return -1;
+
+	/* Ensure client didn't send a wrong value for the count of uids. */
+	size_t expected_uids_len = *uids_len * sizeof(uint64_t);
+	if (expected_uids_len != (buf_len - sizeof(CreateGroup))) return -1;
+
+	const char *uids_base = buf + offsetof(CreateGroup, uids);
+	*uids_raw = uids_base;
+	*uids_raw_len = expected_uids_len;
+
+	for (uint8_t i = 0; i < *uids_len; ++i) {
+		uint64_t net_uid;
+		/* Relying on the compiler to optimize this pointer arithmetic. */
+		memcpy(&net_uid, uids_base + i * sizeof(uint64_t), sizeof(net_uid));
+		uids[i] = ntohll(net_uid);
+	}
+
+	return 0;
+}
+
+size_t ser_create_group(
+	char *buf, 
+	size_t buf_len, 
+	uint64_t seqid, 
+	const uint64_t *uids,
+	uint8_t uids_len
+) {
+	assert(uids_len <= MAX_UIDS_PER_MSG);
+
+	CreateGroup *cg = (CreateGroup *)buf;
+	/* len is size_t to prevent overflows. */
+	size_t len = sizeof(*cg) + uids_len * sizeof(uint64_t);
+	assert(len <= buf_len);
+
+	cg->hdr.len = htons((uint16_t)len);
+	cg->hdr.msgt = MSGT_CREATE_GROUP;
+	cg->hdr.seqid = htonll(seqid);
+	cg->uids_len = uids_len;
+
+	char *uids_base = buf + sizeof(CreateGroup);
+	for (uint8_t i = 0; i < uids_len; ++i) {
+		uint64_t net_uid = htonll(uids[i]);
+		memcpy(uids_base + i * sizeof(uint64_t), &net_uid, sizeof(net_uid));
+	}
 
 	return len;
 }

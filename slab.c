@@ -6,19 +6,23 @@
 
 #define SLAB_INIT_CAP 64
 
-void slab_init_cap(Slab *s, size_t buf_cap, size_t cap) {
-	s->cap = cap;
-	s->len = cap;
-	s->buf_cap = buf_cap;
-	s->buffers = must_malloc(cap * sizeof(char *), "slab_init malloc buffers");
+static inline BufRef *malloc_buf_ref(Slab *s) {
+	return must_malloc(sizeof(BufRef) + s->buf_cap, "malloc_buf_ref");
+}
 
-	for (size_t i = 0; i < s->cap; i++) {
-		s->buffers[i] = must_malloc(buf_cap, "slab_init malloc buffers[i]");
+void slab_init_cap(Slab *s, size_t buf_cap, size_t slab_cap) {
+	s->cap = slab_cap;
+	s->len = slab_cap;
+	s->buf_cap = buf_cap;
+	s->buf_refs = must_malloc(slab_cap * sizeof(BufRef *), "slab_init malloc buf_refs");
+
+	for (size_t i = 0; i < slab_cap; i++) {
+		s->buf_refs[i] = malloc_buf_ref(s);
 	}
 }
 
-void slab_init(Slab *s, size_t buf_len) {
-	slab_init_cap(s, buf_len, SLAB_INIT_CAP);
+void slab_init(Slab *s, size_t buf_cap) {
+	slab_init_cap(s, buf_cap, SLAB_INIT_CAP);
 }
 
 void slab_deinit(Slab *s) {
@@ -27,35 +31,43 @@ void slab_deinit(Slab *s) {
 	 * free its memory here.
 	 */
 	for (size_t i = 0; i < s->len; i++) {
-		free(s->buffers[i]);
+		free(s->buf_refs[i]);
 	}
-	free(s->buffers);
+	free(s->buf_refs);
 }
 
-char *slab_get(Slab *s) {
+BufRef *slab_acquire(Slab *s, size_t ref) {
+	BufRef *bref;
+
+	/* Try to get a released BufRef or allocate a new one. */
 	if (s->len > 0) {
-		char *buf = s->buffers[s->len-1];
+		bref = s->buf_refs[s->len-1];
 		s->len--;
-		return buf;
+	} else {
+		bref = malloc_buf_ref(s);
 	}
 
-	return must_malloc(s->buf_cap, "slab_get malloc buffer");
+	bref->ref = ref;
+	return bref;
 }
 
 size_t slab_buf_cap(Slab *s) {
 	return s->buf_cap;
 }
 
-void slab_put(Slab *s, char *buf) {
+void slab_release(Slab *s, BufRef *bref) {
+	bref->ref -= 1;
+	if (bref->ref != 0) return;
+
 	if (s->cap == s->len) {
 		s->cap *= 2;
-		s->buffers = must_realloc(
-			s->buffers, 
-			s->cap * sizeof(char *),
-			"slab_put realloc buffers"
+		s->buf_refs = must_realloc(
+			s->buf_refs, 
+			s->cap * sizeof(BufRef *),
+			"slab_release realloc buffers"
 		);
 	}
 
-	s->buffers[s->len] = buf;
+	s->buf_refs[s->len] = bref;
 	s->len++;
 }

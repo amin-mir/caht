@@ -79,9 +79,42 @@ int parse_int(const char *str) {
 	return res;
 }
 
-void run_client(struct io_uring *ring, int client_fd) {
-	struct io_uring_cqe *cqes[CQE_BATCH_SIZE];
+void send_msg_wrong_len(struct io_uring *ring, int client_fd) {
+	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+	if (sqe == NULL) {
+		fprintf(stderr, "SQ is full");
+		exit(EXIT_FAILURE);
+	}
 
+	ClientOperation *op_send = must_malloc(
+		sizeof(ClientOperation) + BUFFER_SIZE, 
+		"malloc send operation"
+	);
+	op_send->op_type = OP_TYPE_SEND;
+	op_send->buf_len = BUFFER_SIZE;
+
+	struct __attribute__((packed)) {
+		uint16_t len;
+		uint8_t msgt;
+		uint64_t seqid;
+	} *hdr = (void *)op_send->buf;
+
+	io_uring_prep_send(sqe, client_fd, hdr, sizeof(*hdr), 0);
+	// sqe->flags |= IOSQE_CQE_SKIP_SUCCESS;
+	io_uring_sqe_set_data(sqe, op_send);
+
+	if (io_uring_submit(ring) < 0) {
+		perror("io_uring_submit");
+		exit(EXIT_FAILURE);
+	}
+}
+
+void send_set_username(
+	struct io_uring *ring,
+	int client_fd,
+	uint64_t seqid,
+	const char *uname
+) {
 	/* Send SetUsernameRequest to server. */
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
 	if (sqe == NULL) {
@@ -96,16 +129,8 @@ void run_client(struct io_uring *ring, int client_fd) {
 	op_send->op_type = OP_TYPE_SEND;
 	op_send->buf_len = BUFFER_SIZE;
 
-	uint64_t req_seqid = 1;
-	char *username = "jojo";
-	size_t ulen = strlen(username);
-	size_t req_len = ser_set_username_request(
-		BUFFER_SIZE, 
-		op_send->buf, 
-		req_seqid, 
-		ulen, 
-		username
-	);
+	size_t ulen = strlen(uname);
+	size_t req_len = ser_set_username(BUFFER_SIZE, op_send->buf, seqid, ulen, uname);
 
 	io_uring_prep_send(sqe, client_fd, op_send->buf, req_len, 0);
 	// sqe->flags |= IOSQE_CQE_SKIP_SUCCESS;
@@ -115,9 +140,11 @@ void run_client(struct io_uring *ring, int client_fd) {
 		perror("io_uring_submit");
 		exit(EXIT_FAILURE);
 	}
+}
 
+void prep_recv(struct io_uring *ring, int client_fd) {
 	/* Prepare to read SetUsernameResponse from server. */
-	sqe = io_uring_get_sqe(ring);
+	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
 	if (sqe == NULL) {
 		fprintf(stderr, "SQ is full");
 		exit(EXIT_FAILURE);
@@ -138,6 +165,13 @@ void run_client(struct io_uring *ring, int client_fd) {
 		perror("io_uring_submit");
 		exit(EXIT_FAILURE);
 	}
+}
+
+void set_username(struct io_uring *ring, int client_fd) {
+	uint64_t seqid = 1;
+	char *uname = "jojo";
+	send_set_username(ring, client_fd, seqid, uname);
+	prep_recv(ring, client_fd);
 
 	struct io_uring_cqe *cqe;
 	for (int i = 0; i < 2; i++) {
@@ -162,25 +196,18 @@ void run_client(struct io_uring *ring, int client_fd) {
 
 		switch (op->op_type) {
 			case OP_TYPE_SEND: {
-				printf("send successful.\n");
+				printf("sent set_username.\n");
 				break;
 			}
 			case OP_TYPE_RECV: {
 				uint8_t msgt;
 				uint16_t len;
-				deser_header(op->buf, &len, &msgt);
-				printf("message type: %d len: %d\n", msgt, len);
-
-				// uint8_t code;
-				// uint64_t seqid;
-				// deser_server_error(op->buf, &seqid, &code);
-				// printf("seqid: %lu code: %d\n", seqid, code);
-
-				assert(msgt == MSGT_SET_USERNAME_RESPONSE);
-
 				uint64_t ack_seqid;
-				deser_set_username_response(op->buf, &ack_seqid);
-				assert(req_seqid == ack_seqid);
+				deser_header(op->buf, &len, &msgt, &ack_seqid);
+
+				printf("message type: %d len: %d\n", msgt, len);
+				assert(msgt == MSGT_SET_USERNAME_RESPONSE);
+				assert(seqid == ack_seqid);
 				break;
 			}
 			default: {
@@ -188,7 +215,59 @@ void run_client(struct io_uring *ring, int client_fd) {
 				exit(EXIT_FAILURE);
 			}
 		}
+		free(op);
 	}
+}
+
+void wrong_message_len_disconnect(struct io_uring *ring, int client_fd) {
+	send_msg_wrong_len(ring, client_fd);
+	prep_recv(ring, client_fd);
+
+	struct io_uring_cqe *cqe;
+	for (int i = 0; i < 2; i++) {
+		int ret = io_uring_wait_cqe(ring, &cqe);
+		if (ret < 0) {
+			fprintf(stderr, "io_uring_wait_cqe: %s", strerror(-ret));
+			exit(EXIT_FAILURE);
+		}
+
+		/**
+		 * Save the necessary data into local variables and do not access cqe after
+		 * calling io_uring_cqe_seen.
+		 */
+		int cqe_res = cqe->res;
+		ClientOperation *op = io_uring_cqe_get_data(cqe);
+		io_uring_cqe_seen(ring, cqe);
+
+		if (cqe_res < 0) {
+			fprintf(stderr, "operation failed: %s\n", strerror(-cqe->res));
+			continue;
+		}
+
+		switch (op->op_type) {
+			case OP_TYPE_SEND: {
+				printf("sent message with wrong len.\n");
+				break;
+			}
+			case OP_TYPE_RECV: {
+				assert(cqe_res == 0);
+				printf("server disconnected us.\n");
+				break;
+			}
+			default: {
+				fprintf(stderr, "invalid op type: %d\n", op->op_type);
+				exit(EXIT_FAILURE);
+			}
+			free(op);
+		}
+	}
+}
+
+void run_client(struct io_uring *ring, int client_fd) {
+	struct io_uring_cqe *cqes[CQE_BATCH_SIZE];
+	
+	set_username(ring, client_fd);
+	wrong_message_len_disconnect(ring, client_fd);
 }
 
 int main(int argc, char *argv[]) {

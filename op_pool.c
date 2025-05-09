@@ -86,7 +86,7 @@ Operation *op_pool_new_entry(OpPool *pool) {
 	 */
 	op->pool_id = pool->ops_next_idx;
 	op->client_fd = -1;
-	op->buf = NULL;
+	op->buf_ref = NULL;
 
 	pool->ops[pool->ops_next_idx] = op;
 	pool->ops_next_idx++;
@@ -96,7 +96,7 @@ Operation *op_pool_new_entry(OpPool *pool) {
 
 void op_pool_return(OpPool *pool, Operation *op) {
 	/**
-	 * Because Operation doesn't manage the lifetime of op->buf, we don't
+	 * Because Operation doesn't manage the lifetime of op->buf_ref, we don't
 	 * need to free that here. The buffers come from the slab, and the slab
 	 * is in charge of freeing them.
 	 *
@@ -109,7 +109,7 @@ void op_pool_return(OpPool *pool, Operation *op) {
 	 * performed by users of pool, that's why we assert to ensure they have taken
 	 * care of these things here.
 	 */
-	assert(op->buf == NULL);
+	assert(op->buf_ref == NULL);
 	assert(op->client_fd == -1);
 
 	if (pool->free_len == pool->free_cap) {
